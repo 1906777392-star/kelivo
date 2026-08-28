@@ -249,7 +249,7 @@ Stream<StreamChunk> sendOpenAIStream(
       final roleRaw = (m['role'] ?? 'user').toString();
       final isCurrentUser =
           roleRaw == 'user' && i == lastResponsesUserIndex;
-      if (!isCurrentUser) raw = _stripHistoricalImageMarkdown(raw);
+      if (!isCurrentUser) raw = stripHistoricalImageMarkdown(raw);
 
       // Responses API supports a top-level `instructions` field that has higher priority
       if (roleRaw == 'system') {

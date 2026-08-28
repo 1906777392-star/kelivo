@@ -132,7 +132,7 @@ bool _isStructuredVisualContentPart(dynamic part) {
       type == 'input_video';
 }
 
-String _stripHistoricalImageMarkdown(String raw) {
+String stripHistoricalImageMarkdown(String raw) {
   if (!raw.contains('![')) return raw;
   return raw.replaceAll(
     RegExp(r'!\[[^\]]*\]\([^)]*\)'),
@@ -307,7 +307,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
     final role = (m['role'] ?? 'user').toString();
     final isAssistant = role == 'assistant';
     final isCurrentUser = role == 'user' && i == lastUserIndex;
-    if (!isCurrentUser) raw = _stripHistoricalImageMarkdown(raw);
+    if (!isCurrentUser) raw = stripHistoricalImageMarkdown(raw);
     final internalMediaRefs = parseInternalMediaRefs(
       m[multimodalInternalMediaPathsKey],
     );
