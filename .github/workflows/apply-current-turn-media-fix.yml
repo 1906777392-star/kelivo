@@ -1,0 +1,30 @@
+name: Apply current-turn media fix
+
+on:
+  push:
+    branches: [fix-current-turn-media-only]
+    paths:
+      - tool/apply_current_turn_media_fix.py
+      - .github/workflows/apply-current-turn-media-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-current-turn-media-only
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python tool/apply_current_turn_media_fix.py
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add lib/core/services/api/providers/openai/chat_completions_api.dart lib/core/services/api/providers/openai/openai_provider.dart test/chat_api_custom_image_marker_test.dart
+          git commit -m "fix: send visual media only for the current user turn"
+          git push
