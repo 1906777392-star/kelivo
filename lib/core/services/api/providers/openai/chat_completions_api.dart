@@ -521,7 +521,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
     // userMediaPaths, plus Markdown ![](...).
     // Consume injected media refs for user and assistant history turns.
 
-    if (!hasMarkdownImages && !hasAttachedImages && !hasInternalMedia && true) {
+    if (!hasMarkdownImages && !hasAttachedImages && !hasInternalMedia) {
       outMsg['content'] = raw;
       out.add(outMsg);
       continue;
