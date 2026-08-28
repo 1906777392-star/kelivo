@@ -281,8 +281,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       break;
     }
   }
-  final pendingAssistantMediaUrls = <String>[];
-  final pendingAssistantVideoUrls = <String>{};
   final toolTurnIds = <int>{};
   final messageTurnIds = <int>[];
   var currentTurnId = -1;
@@ -360,7 +358,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
         role == 'user' &&
         i == lastUserIndex &&
         (userMediaPaths?.isNotEmpty == true);
-    const shouldAttachAssistantMedia = false;
     final hasInternalMedia =
         canImageInput && isCurrentUser && internalMediaRefs.isNotEmpty;
 
@@ -381,19 +378,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       // userImagePaths attachment. Merge those onto the last user turn, and
       // still stash assistant media — including image_url/video_url already
       // embedded in the List with no structured sidecar refs.
-      final listHasEmbeddedMedia =
-          canImageInput &&
-          content is List &&
-          content.any((part) {
-            if (part is! Map) return false;
-            final type = (part['type'] ?? '').toString();
-            return type == 'image_url' || type == 'video_url';
-          });
-      if (canImageInput &&
-          (hasInternalMedia ||
-              hasAttachedImages ||
-              shouldAttachAssistantMedia ||
-              (isAssistant && listHasEmbeddedMedia))) {
+      if (canImageInput && (hasInternalMedia || hasAttachedImages)) {
         final parts = <Map<String, dynamic>>[
           if (content is List)
             for (final part in content)
@@ -434,19 +419,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
           }
         }
 
-        void stashOrAddImageUrl(String url) {
-          if (url.isEmpty) return;
-          if (!allowRemoteImages && isRemoteHttpUrl(url)) return;
-          if (isAssistant) return;
-          addImageUrl(url);
-        }
-
-        void stashOrAddVideoUrl(String url) {
-          if (url.isEmpty) return;
-          if (isAssistant) return;
-          addVideoUrl(url);
-        }
-
         // Index existing List media; on assistant turns also stash them so the
         // role gate moves unsupported image_url/video_url onto the last user.
         for (final part in List<Map<String, dynamic>>.from(parts)) {
@@ -459,7 +431,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
             if (url.isNotEmpty) {
               seenImageUrls.add(url);
               seenSources.add(normalizeSrc(url));
-              if (isAssistant) stashOrAddImageUrl(url);
             }
           } else if (type == 'video_url') {
             final video = part['video_url'];
@@ -469,13 +440,14 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
             if (url.isNotEmpty) {
               seenVideoUrls.add(url);
               seenSources.add(normalizeSrc(url));
-              if (isAssistant) stashOrAddVideoUrl(url);
             }
           }
         }
 
         final supplementalRefs = supplementalMediaRefs(
-          internalRaw: isCurrentUser ? m[multimodalInternalMediaPathsKey] : null,
+          internalRaw: isCurrentUser
+              ? m[multimodalInternalMediaPathsKey]
+              : null,
           userPaths: userMediaPaths,
           includeUserPaths: hasAttachedImages,
         );
@@ -504,18 +476,9 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
                 );
           if (dataUrl == null) continue;
           if (isVideo) {
-            stashOrAddVideoUrl(dataUrl);
+            addVideoUrl(dataUrl);
           } else {
-            stashOrAddImageUrl(dataUrl);
-          }
-        }
-        if (shouldAttachAssistantMedia) {
-          for (final url in pendingAssistantMediaUrls) {
-            if (pendingAssistantVideoUrls.contains(url)) {
-              addVideoUrl(url);
-            } else {
-              addImageUrl(url);
-            }
+            addImageUrl(dataUrl);
           }
         }
         if (isAssistant) {
@@ -558,10 +521,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
     // userMediaPaths, plus Markdown ![](...).
     // Consume injected media refs for user and assistant history turns.
 
-    if (!hasMarkdownImages &&
-        !hasAttachedImages &&
-        !hasInternalMedia &&
-        !shouldAttachAssistantMedia) {
+    if (!hasMarkdownImages && !hasAttachedImages && !hasInternalMedia && true) {
       outMsg['content'] = raw;
       out.add(outMsg);
       continue;
@@ -617,30 +577,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       }
     }
 
-    void stashOrAddImageUrl(String url) {
-      if (url.isEmpty) return;
-      if (!allowRemoteImages && isRemoteHttpUrl(url)) return;
-      if (isAssistant) {
-        if (!pendingAssistantMediaUrls.contains(url)) {
-          pendingAssistantMediaUrls.add(url);
-        }
-        return;
-      }
-      addImageUrl(url);
-    }
-
-    void stashOrAddVideoUrl(String url) {
-      if (url.isEmpty) return;
-      if (isAssistant) {
-        if (!pendingAssistantMediaUrls.contains(url)) {
-          pendingAssistantMediaUrls.add(url);
-        }
-        pendingAssistantVideoUrls.add(url);
-        return;
-      }
-      addVideoUrl(url);
-    }
-
     if (parsed.text.isNotEmpty) {
       parts.add({'type': 'text', 'text': parsed.text});
     }
@@ -656,7 +592,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       } else {
         url = ref.src;
       }
-      stashOrAddImageUrl(url);
+      addImageUrl(url);
     }
     final supplementalRefs = supplementalMediaRefs(
       internalRaw: isCurrentUser ? m[multimodalInternalMediaPathsKey] : null,
@@ -684,19 +620,9 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
           : await tryEncodeBase64DataUrl(p, explicitMime: mediaRef.mime);
       if (dataUrl == null) continue;
       if (isVideo) {
-        stashOrAddVideoUrl(dataUrl);
+        addVideoUrl(dataUrl);
       } else {
-        stashOrAddImageUrl(dataUrl);
-      }
-    }
-    // Attach stashed assistant media to the last user message.
-    if (shouldAttachAssistantMedia) {
-      for (final url in pendingAssistantMediaUrls) {
-        if (pendingAssistantVideoUrls.contains(url)) {
-          addVideoUrl(url);
-        } else {
-          addImageUrl(url);
-        }
+        addImageUrl(dataUrl);
       }
     }
     // Assistant content stays string or multimodal text-only parts.

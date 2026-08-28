@@ -107,31 +107,36 @@ void main() {
       );
     });
 
-    test('historical markdown image payload is replaced by a small marker', () async {
-      final messages = await buildOpenAIChatCompletionMessages(
-        const [
-          {
-            'role': 'assistant',
-            'content': 'done ![image](data:image/png;base64,VERY_LARGE_PAYLOAD)',
-          },
-          {'role': 'user', 'content': 'next'},
-        ],
-        canImageInput: true,
-        allowRemoteImages: true,
-        reasoningContentReplayPolicy: ReasoningContentReplayPolicy.none,
-      );
+    test(
+      'historical markdown image payload is replaced by a small marker',
+      () async {
+        final messages = await buildOpenAIChatCompletionMessages(
+          const [
+            {
+              'role': 'assistant',
+              'content':
+                  'done ![image](data:image/png;base64,VERY_LARGE_PAYLOAD)',
+            },
+            {'role': 'user', 'content': 'next'},
+          ],
+          canImageInput: true,
+          allowRemoteImages: true,
+          reasoningContentReplayPolicy: ReasoningContentReplayPolicy.none,
+        );
 
-      expect(jsonEncode(messages), isNot(contains('VERY_LARGE_PAYLOAD')));
-      expect(jsonEncode(messages), contains('historical image omitted'));
-    });
+        expect(jsonEncode(messages), isNot(contains('VERY_LARGE_PAYLOAD')));
+        expect(jsonEncode(messages), contains('historical image omitted'));
+      },
+    );
 
     test('Responses API also omits historical media', () async {
       late Map<String, dynamic> requestBody;
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() async => server.close(force: true));
       server.listen((request) async {
-        requestBody = (jsonDecode(await utf8.decoder.bind(request).join()) as Map)
-            .cast<String, dynamic>();
+        requestBody =
+            (jsonDecode(await utf8.decoder.bind(request).join()) as Map)
+                .cast<String, dynamic>();
         request.response.statusCode = HttpStatus.ok;
         request.response.headers.contentType = ContentType.json;
         request.response.write(

@@ -257,8 +257,6 @@ void main() {
       expect(parts.any((part) => part['type'] == 'image_url'), isTrue);
     });
 
-
-
     test(
       'userImagePaths attach images without marker strings in content',
       () async {
@@ -419,7 +417,6 @@ void main() {
       },
     );
 
-
     test('tool follow-up keeps bare userImagePaths on last user', () async {
       final dir = await Directory.systemTemp.createTemp(
         'kelivo_tool_user_paths_',
@@ -530,7 +527,6 @@ void main() {
             'user message is no longer array-tail and has no structured refs',
       );
     });
-
   });
 
   group('ChatApiService Responses API structured media paths', () {
@@ -713,8 +709,6 @@ void main() {
         );
       }
     });
-
-
 
     test(
       'remote structured media stays as text when allowRemoteImages is false',
