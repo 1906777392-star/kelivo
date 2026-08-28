@@ -1,0 +1,44 @@
+name: Finalize current-turn media fix
+
+on:
+  push:
+    branches: [fix-current-turn-media-only]
+    paths:
+      - .github/workflows/finalize-current-turn-media-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-current-turn-media-only
+          fetch-depth: 0
+      - name: Remove stale cleanup artifacts and dead condition
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/core/services/api/providers/openai/chat_completions_api.dart')
+          text = path.read_text()
+          old = 'if (!hasMarkdownImages && !hasAttachedImages && !hasInternalMedia && true) {'
+          new = 'if (!hasMarkdownImages && !hasAttachedImages && !hasInternalMedia) {'
+          if old not in text:
+              raise SystemExit('expected stale condition was not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm -f tool/finalize_current_turn_media_fix.py
+          rm -f .github/workflows/finalize-current-turn-media-fix.yml
+      - name: Commit final cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: remove stale media cleanup artifacts"
+          git push
