@@ -230,9 +230,6 @@ Stream<StreamChunk> sendOpenAIStream(
     for (final tool in builtInPayload.tools) {
       addResponsesBuiltInTool(tool);
     }
-    // Collect assistant images to attach to the last user message.
-    // Use last *user* index so tool follow-ups still receive stashed media.
-    final List<String> lastAssistantImageUrls = <String>[];
     int lastResponsesUserIndex = -1;
     for (int i = messages.length - 1; i >= 0; i--) {
       if ((messages[i]['role'] ?? '').toString() == 'user') {
@@ -243,10 +240,12 @@ Stream<StreamChunk> sendOpenAIStream(
     for (int i = 0; i < messages.length; i++) {
       final m = messages[i];
       final originalContent = m['content'];
-      final raw = originalContent is List
+      var raw = originalContent is List
           ? textFromContentParts(originalContent)
           : (originalContent ?? '').toString();
       final roleRaw = (m['role'] ?? 'user').toString();
+      final isCurrentUser = roleRaw == 'user' && i == lastResponsesUserIndex;
+      if (!isCurrentUser) raw = stripHistoricalImageMarkdown(raw);
 
       // Responses API supports a top-level `instructions` field that has higher priority
       if (roleRaw == 'system') {
@@ -299,31 +298,21 @@ Stream<StreamChunk> sendOpenAIStream(
       // Semantic media detection only - custom attachment markers are not
       // recognized. Attachments arrive via structured media-path keys /
       // userImagePaths, plus Markdown ![](...).
-      final hasMarkdownImages = shouldParseMarkdownImages(
-        raw,
-        skipImageParsing: skipImageParsing,
-      );
+      final hasMarkdownImages =
+          isCurrentUser &&
+          shouldParseMarkdownImages(raw, skipImageParsing: skipImageParsing);
       final internalMediaRefs = parseInternalMediaRefs(
         m[multimodalInternalMediaPathsKey],
       );
       // Consume injected media refs for user and assistant history turns.
-      final hasInternalMedia = canImageInput && internalMediaRefs.isNotEmpty;
+      final hasInternalMedia =
+          canImageInput && isCurrentUser && internalMediaRefs.isNotEmpty;
       final hasAttachedImages =
           canImageInput &&
           (m['role'] == 'user') &&
           i == lastResponsesUserIndex &&
           (userImagePaths?.isNotEmpty == true);
-      // For the last user message, also attach the last assistant image if available
-      final shouldAttachAssistantImage =
-          canImageInput &&
-          (m['role'] == 'user') &&
-          i == lastResponsesUserIndex &&
-          lastAssistantImageUrls.isNotEmpty;
-
-      if (hasMarkdownImages ||
-          hasAttachedImages ||
-          hasInternalMedia ||
-          shouldAttachAssistantImage) {
+      if (hasMarkdownImages || hasAttachedImages || hasInternalMedia) {
         final parsed = await parseTextAndImages(
           raw,
           allowRemoteImages: allowRemoteImages,
@@ -389,18 +378,13 @@ Stream<StreamChunk> sendOpenAIStream(
           } else {
             url = ref.src; // http(s)
           }
-          // For assistant messages, collect images; for user messages, add directly
-          if (isAssistant) {
-            if (!lastAssistantImageUrls.contains(url)) {
-              lastAssistantImageUrls.add(url);
-            }
-          } else {
-            addImage(url);
-          }
+          addImage(url);
         }
         // Structured / attached media refs (user + assistant history turns)
         final supplementalRefs = supplementalMediaRefs(
-          internalRaw: m[multimodalInternalMediaPathsKey],
+          internalRaw: isCurrentUser
+              ? m[multimodalInternalMediaPathsKey]
+              : null,
           userPaths: userImagePaths,
           includeUserPaths: hasAttachedImages,
         );
@@ -438,21 +422,7 @@ Stream<StreamChunk> sendOpenAIStream(
               ? p
               : await tryEncodeBase64DataUrl(p, explicitMime: mediaRef.mime);
           if (dataUrl == null) continue;
-          // Assistant Responses messages may only contain output_text/refusal.
-          // Mirror the markdown path: stash for the following user turn.
-          if (isAssistant) {
-            if (!lastAssistantImageUrls.contains(dataUrl)) {
-              lastAssistantImageUrls.add(dataUrl);
-            }
-          } else {
-            addImage(dataUrl);
-          }
-        }
-        // Attach all stashed assistant images to the last user message
-        if (shouldAttachAssistantImage) {
-          for (final url in lastAssistantImageUrls) {
-            addImage(url);
-          }
+          addImage(dataUrl);
         }
         // Use proper message object format for assistant messages
         if (isAssistant) {

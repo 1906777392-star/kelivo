@@ -122,6 +122,24 @@ bool _isRemoteImageContentPart(dynamic part) {
   return rawUrl is String && isRemoteHttpUrl(rawUrl);
 }
 
+bool _isStructuredVisualContentPart(dynamic part) {
+  if (part is! Map) return false;
+  final type = (part['type'] ?? '').toString().trim().toLowerCase();
+  return type == 'image_url' ||
+      type == 'input_image' ||
+      type == 'image' ||
+      type == 'video_url' ||
+      type == 'input_video';
+}
+
+String stripHistoricalImageMarkdown(String raw) {
+  if (!raw.contains('![')) return raw;
+  return raw.replaceAll(
+    RegExp(r'!\[[^\]]*\]\([^)]*\)'),
+    '[historical image omitted]',
+  );
+}
+
 Map<String, dynamic> _buildAssistantToolCallMessage({
   required List<Map<String, dynamic>> calls,
   dynamic content,
@@ -252,10 +270,10 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
   bool skipImageParsing = false,
 }) async {
   final out = <Map<String, dynamic>>[];
-  // Assistant turns cannot carry image_url/video_url; stash for the last user
-  // message (same pattern as Responses shouldAttachAssistantImage).
-  // Use last *user* index — not array-tail — so tool follow-ups that append
-  // assistant tool_calls / tool results still receive stashed assistant media.
+  // Only the latest user turn may carry visual payloads. Historical
+  // attachments stay in local chat storage and are represented as text only;
+  // otherwise every request re-encodes the same images and can exceed gateway
+  // payload limits. Tool follow-ups still reuse the latest user turn.
   int lastUserIndex = -1;
   for (int i = messages.length - 1; i >= 0; i--) {
     if ((messages[i]['role'] ?? '').toString() == 'user') {
@@ -263,8 +281,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       break;
     }
   }
-  final pendingAssistantMediaUrls = <String>[];
-  final pendingAssistantVideoUrls = <String>{};
   final toolTurnIds = <int>{};
   final messageTurnIds = <int>[];
   var currentTurnId = -1;
@@ -283,11 +299,13 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
   for (int i = 0; i < messages.length; i++) {
     final m = messages[i];
     final originalContent = m['content'];
-    final raw = originalContent is List
+    var raw = originalContent is List
         ? textFromContentParts(originalContent)
         : (originalContent ?? '').toString();
     final role = (m['role'] ?? 'user').toString();
     final isAssistant = role == 'assistant';
+    final isCurrentUser = role == 'user' && i == lastUserIndex;
+    if (!isCurrentUser) raw = stripHistoricalImageMarkdown(raw);
     final internalMediaRefs = parseInternalMediaRefs(
       m[multimodalInternalMediaPathsKey],
     );
@@ -340,12 +358,8 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
         role == 'user' &&
         i == lastUserIndex &&
         (userMediaPaths?.isNotEmpty == true);
-    final shouldAttachAssistantMedia =
-        canImageInput &&
-        role == 'user' &&
-        i == lastUserIndex &&
-        pendingAssistantMediaUrls.isNotEmpty;
-    final hasInternalMedia = canImageInput && internalMediaRefs.isNotEmpty;
+    final hasInternalMedia =
+        canImageInput && isCurrentUser && internalMediaRefs.isNotEmpty;
 
     if (originalContent is List) {
       dynamic content = canImageInput
@@ -355,23 +369,16 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
                       .where((part) => !_isRemoteImageContentPart(part))
                       .toList(growable: false))
           : raw;
+      if (content is List && !isCurrentUser) {
+        content = content
+            .where((part) => !_isStructuredVisualContentPart(part))
+            .toList(growable: false);
+      }
       // List-shaped content used to early-return before assistant-media /
       // userImagePaths attachment. Merge those onto the last user turn, and
       // still stash assistant media — including image_url/video_url already
       // embedded in the List with no structured sidecar refs.
-      final listHasEmbeddedMedia =
-          canImageInput &&
-          content is List &&
-          content.any((part) {
-            if (part is! Map) return false;
-            final type = (part['type'] ?? '').toString();
-            return type == 'image_url' || type == 'video_url';
-          });
-      if (canImageInput &&
-          (hasInternalMedia ||
-              hasAttachedImages ||
-              shouldAttachAssistantMedia ||
-              (isAssistant && listHasEmbeddedMedia))) {
+      if (canImageInput && (hasInternalMedia || hasAttachedImages)) {
         final parts = <Map<String, dynamic>>[
           if (content is List)
             for (final part in content)
@@ -412,30 +419,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
           }
         }
 
-        void stashOrAddImageUrl(String url) {
-          if (url.isEmpty) return;
-          if (!allowRemoteImages && isRemoteHttpUrl(url)) return;
-          if (isAssistant) {
-            if (!pendingAssistantMediaUrls.contains(url)) {
-              pendingAssistantMediaUrls.add(url);
-            }
-            return;
-          }
-          addImageUrl(url);
-        }
-
-        void stashOrAddVideoUrl(String url) {
-          if (url.isEmpty) return;
-          if (isAssistant) {
-            if (!pendingAssistantMediaUrls.contains(url)) {
-              pendingAssistantMediaUrls.add(url);
-            }
-            pendingAssistantVideoUrls.add(url);
-            return;
-          }
-          addVideoUrl(url);
-        }
-
         // Index existing List media; on assistant turns also stash them so the
         // role gate moves unsupported image_url/video_url onto the last user.
         for (final part in List<Map<String, dynamic>>.from(parts)) {
@@ -448,7 +431,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
             if (url.isNotEmpty) {
               seenImageUrls.add(url);
               seenSources.add(normalizeSrc(url));
-              if (isAssistant) stashOrAddImageUrl(url);
             }
           } else if (type == 'video_url') {
             final video = part['video_url'];
@@ -458,13 +440,14 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
             if (url.isNotEmpty) {
               seenVideoUrls.add(url);
               seenSources.add(normalizeSrc(url));
-              if (isAssistant) stashOrAddVideoUrl(url);
             }
           }
         }
 
         final supplementalRefs = supplementalMediaRefs(
-          internalRaw: m[multimodalInternalMediaPathsKey],
+          internalRaw: isCurrentUser
+              ? m[multimodalInternalMediaPathsKey]
+              : null,
           userPaths: userMediaPaths,
           includeUserPaths: hasAttachedImages,
         );
@@ -493,18 +476,9 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
                 );
           if (dataUrl == null) continue;
           if (isVideo) {
-            stashOrAddVideoUrl(dataUrl);
+            addVideoUrl(dataUrl);
           } else {
-            stashOrAddImageUrl(dataUrl);
-          }
-        }
-        if (shouldAttachAssistantMedia) {
-          for (final url in pendingAssistantMediaUrls) {
-            if (pendingAssistantVideoUrls.contains(url)) {
-              addVideoUrl(url);
-            } else {
-              addImageUrl(url);
-            }
+            addImageUrl(dataUrl);
           }
         }
         if (isAssistant) {
@@ -539,19 +513,15 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       continue;
     }
 
-    final hasMarkdownImages = shouldParseMarkdownImages(
-      raw,
-      skipImageParsing: skipImageParsing,
-    );
+    final hasMarkdownImages =
+        isCurrentUser &&
+        shouldParseMarkdownImages(raw, skipImageParsing: skipImageParsing);
     // Semantic media detection only - custom attachment markers are not
     // recognized. Attachments arrive via structured media-path keys /
     // userMediaPaths, plus Markdown ![](...).
     // Consume injected media refs for user and assistant history turns.
 
-    if (!hasMarkdownImages &&
-        !hasAttachedImages &&
-        !hasInternalMedia &&
-        !shouldAttachAssistantMedia) {
+    if (!hasMarkdownImages && !hasAttachedImages && !hasInternalMedia) {
       outMsg['content'] = raw;
       out.add(outMsg);
       continue;
@@ -607,30 +577,6 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       }
     }
 
-    void stashOrAddImageUrl(String url) {
-      if (url.isEmpty) return;
-      if (!allowRemoteImages && isRemoteHttpUrl(url)) return;
-      if (isAssistant) {
-        if (!pendingAssistantMediaUrls.contains(url)) {
-          pendingAssistantMediaUrls.add(url);
-        }
-        return;
-      }
-      addImageUrl(url);
-    }
-
-    void stashOrAddVideoUrl(String url) {
-      if (url.isEmpty) return;
-      if (isAssistant) {
-        if (!pendingAssistantMediaUrls.contains(url)) {
-          pendingAssistantMediaUrls.add(url);
-        }
-        pendingAssistantVideoUrls.add(url);
-        return;
-      }
-      addVideoUrl(url);
-    }
-
     if (parsed.text.isNotEmpty) {
       parts.add({'type': 'text', 'text': parsed.text});
     }
@@ -646,10 +592,10 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       } else {
         url = ref.src;
       }
-      stashOrAddImageUrl(url);
+      addImageUrl(url);
     }
     final supplementalRefs = supplementalMediaRefs(
-      internalRaw: m[multimodalInternalMediaPathsKey],
+      internalRaw: isCurrentUser ? m[multimodalInternalMediaPathsKey] : null,
       userPaths: userMediaPaths,
       includeUserPaths: hasAttachedImages,
     );
@@ -674,19 +620,9 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
           : await tryEncodeBase64DataUrl(p, explicitMime: mediaRef.mime);
       if (dataUrl == null) continue;
       if (isVideo) {
-        stashOrAddVideoUrl(dataUrl);
+        addVideoUrl(dataUrl);
       } else {
-        stashOrAddImageUrl(dataUrl);
-      }
-    }
-    // Attach stashed assistant media to the last user message.
-    if (shouldAttachAssistantMedia) {
-      for (final url in pendingAssistantMediaUrls) {
-        if (pendingAssistantVideoUrls.contains(url)) {
-          addVideoUrl(url);
-        } else {
-          addImageUrl(url);
-        }
+        addImageUrl(dataUrl);
       }
     }
     // Assistant content stays string or multimodal text-only parts.
