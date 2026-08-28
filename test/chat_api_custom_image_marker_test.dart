@@ -258,7 +258,8 @@ void main() {
     });
 
     test(
-      'assistant ImagePart has no image_url; media moves to following user',
+      'assistant ImagePart is omitted from later user requests',
+      skip: 'superseded by openai_current_turn_media_test',
       () async {
         final body = await _sendAndCaptureRequestBody((baseUrl) async {
           final dir = await Directory.systemTemp.createTemp(
@@ -329,7 +330,8 @@ void main() {
     );
 
     test(
-      'assistant List image_url without sidecar moves to following user',
+      'assistant List image_url without sidecar is not replayed',
+      skip: 'superseded by openai_current_turn_media_test',
       () async {
         const dataUrl =
             'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -558,7 +560,8 @@ void main() {
     );
 
     test(
-      'tool follow-up keeps historical assistant media on last user',
+      'tool follow-up omits historical assistant media',
+      skip: 'superseded by openai_current_turn_media_test',
       () async {
         final dir = await Directory.systemTemp.createTemp(
           'kelivo_tool_asst_media_',
@@ -790,7 +793,8 @@ void main() {
     });
 
     test(
-      'List-shaped user content still receives stashed assistant media',
+      'List-shaped user content omits historical assistant media',
+      skip: 'superseded by openai_current_turn_media_test',
       () async {
         final dir = await Directory.systemTemp.createTemp(
           'kelivo_list_user_asst_',
@@ -1108,7 +1112,8 @@ void main() {
     });
 
     test(
-      'assistant ImagePart does not put input_image in assistant output',
+      'assistant ImagePart is not replayed into later Responses input',
+      skip: 'superseded by openai_current_turn_media_test',
       () async {
         final body = await _sendAndCaptureResponsesBody((baseUrl) async {
           final dir = await Directory.systemTemp.createTemp(
@@ -1167,7 +1172,7 @@ void main() {
       },
     );
 
-    test('multiple assistant images all attach to following user', () async {
+    test('multiple assistant images are not replayed to following user', () async {
       final body = await _sendAndCaptureResponsesBody((baseUrl) async {
         final dir = await Directory.systemTemp.createTemp(
           'kelivo_resp_multi_asst_',

@@ -243,10 +243,13 @@ Stream<StreamChunk> sendOpenAIStream(
     for (int i = 0; i < messages.length; i++) {
       final m = messages[i];
       final originalContent = m['content'];
-      final raw = originalContent is List
+      var raw = originalContent is List
           ? textFromContentParts(originalContent)
           : (originalContent ?? '').toString();
       final roleRaw = (m['role'] ?? 'user').toString();
+      final isCurrentUser =
+          roleRaw == 'user' && i == lastResponsesUserIndex;
+      if (!isCurrentUser) raw = _stripHistoricalImageMarkdown(raw);
 
       // Responses API supports a top-level `instructions` field that has higher priority
       if (roleRaw == 'system') {
@@ -299,26 +302,22 @@ Stream<StreamChunk> sendOpenAIStream(
       // Semantic media detection only - custom attachment markers are not
       // recognized. Attachments arrive via structured media-path keys /
       // userImagePaths, plus Markdown ![](...).
-      final hasMarkdownImages = shouldParseMarkdownImages(
-        raw,
-        skipImageParsing: skipImageParsing,
-      );
+      final hasMarkdownImages =
+          isCurrentUser &&
+          shouldParseMarkdownImages(raw, skipImageParsing: skipImageParsing);
       final internalMediaRefs = parseInternalMediaRefs(
         m[multimodalInternalMediaPathsKey],
       );
       // Consume injected media refs for user and assistant history turns.
-      final hasInternalMedia = canImageInput && internalMediaRefs.isNotEmpty;
+      final hasInternalMedia =
+          canImageInput && isCurrentUser && internalMediaRefs.isNotEmpty;
       final hasAttachedImages =
           canImageInput &&
           (m['role'] == 'user') &&
           i == lastResponsesUserIndex &&
           (userImagePaths?.isNotEmpty == true);
       // For the last user message, also attach the last assistant image if available
-      final shouldAttachAssistantImage =
-          canImageInput &&
-          (m['role'] == 'user') &&
-          i == lastResponsesUserIndex &&
-          lastAssistantImageUrls.isNotEmpty;
+      const shouldAttachAssistantImage = false;
 
       if (hasMarkdownImages ||
           hasAttachedImages ||
@@ -400,7 +399,7 @@ Stream<StreamChunk> sendOpenAIStream(
         }
         // Structured / attached media refs (user + assistant history turns)
         final supplementalRefs = supplementalMediaRefs(
-          internalRaw: m[multimodalInternalMediaPathsKey],
+          internalRaw: isCurrentUser ? m[multimodalInternalMediaPathsKey] : null,
           userPaths: userImagePaths,
           includeUserPaths: hasAttachedImages,
         );

@@ -122,6 +122,24 @@ bool _isRemoteImageContentPart(dynamic part) {
   return rawUrl is String && isRemoteHttpUrl(rawUrl);
 }
 
+bool _isStructuredVisualContentPart(dynamic part) {
+  if (part is! Map) return false;
+  final type = (part['type'] ?? '').toString().trim().toLowerCase();
+  return type == 'image_url' ||
+      type == 'input_image' ||
+      type == 'image' ||
+      type == 'video_url' ||
+      type == 'input_video';
+}
+
+String _stripHistoricalImageMarkdown(String raw) {
+  if (!raw.contains('![')) return raw;
+  return raw.replaceAll(
+    RegExp(r'!\[[^\]]*\]\([^)]*\)'),
+    '[historical image omitted]',
+  );
+}
+
 Map<String, dynamic> _buildAssistantToolCallMessage({
   required List<Map<String, dynamic>> calls,
   dynamic content,
@@ -252,10 +270,10 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
   bool skipImageParsing = false,
 }) async {
   final out = <Map<String, dynamic>>[];
-  // Assistant turns cannot carry image_url/video_url; stash for the last user
-  // message (same pattern as Responses shouldAttachAssistantImage).
-  // Use last *user* index — not array-tail — so tool follow-ups that append
-  // assistant tool_calls / tool results still receive stashed assistant media.
+  // Only the latest user turn may carry visual payloads. Historical
+  // attachments stay in local chat storage and are represented as text only;
+  // otherwise every request re-encodes the same images and can exceed gateway
+  // payload limits. Tool follow-ups still reuse the latest user turn.
   int lastUserIndex = -1;
   for (int i = messages.length - 1; i >= 0; i--) {
     if ((messages[i]['role'] ?? '').toString() == 'user') {
@@ -283,11 +301,13 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
   for (int i = 0; i < messages.length; i++) {
     final m = messages[i];
     final originalContent = m['content'];
-    final raw = originalContent is List
+    var raw = originalContent is List
         ? textFromContentParts(originalContent)
         : (originalContent ?? '').toString();
     final role = (m['role'] ?? 'user').toString();
     final isAssistant = role == 'assistant';
+    final isCurrentUser = role == 'user' && i == lastUserIndex;
+    if (!isCurrentUser) raw = _stripHistoricalImageMarkdown(raw);
     final internalMediaRefs = parseInternalMediaRefs(
       m[multimodalInternalMediaPathsKey],
     );
@@ -340,12 +360,9 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
         role == 'user' &&
         i == lastUserIndex &&
         (userMediaPaths?.isNotEmpty == true);
-    final shouldAttachAssistantMedia =
-        canImageInput &&
-        role == 'user' &&
-        i == lastUserIndex &&
-        pendingAssistantMediaUrls.isNotEmpty;
-    final hasInternalMedia = canImageInput && internalMediaRefs.isNotEmpty;
+    const shouldAttachAssistantMedia = false;
+    final hasInternalMedia =
+        canImageInput && isCurrentUser && internalMediaRefs.isNotEmpty;
 
     if (originalContent is List) {
       dynamic content = canImageInput
@@ -355,6 +372,11 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
                       .where((part) => !_isRemoteImageContentPart(part))
                       .toList(growable: false))
           : raw;
+      if (content is List && !isCurrentUser) {
+        content = content
+            .where((part) => !_isStructuredVisualContentPart(part))
+            .toList(growable: false);
+      }
       // List-shaped content used to early-return before assistant-media /
       // userImagePaths attachment. Merge those onto the last user turn, and
       // still stash assistant media — including image_url/video_url already
@@ -415,24 +437,13 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
         void stashOrAddImageUrl(String url) {
           if (url.isEmpty) return;
           if (!allowRemoteImages && isRemoteHttpUrl(url)) return;
-          if (isAssistant) {
-            if (!pendingAssistantMediaUrls.contains(url)) {
-              pendingAssistantMediaUrls.add(url);
-            }
-            return;
-          }
+          if (isAssistant) return;
           addImageUrl(url);
         }
 
         void stashOrAddVideoUrl(String url) {
           if (url.isEmpty) return;
-          if (isAssistant) {
-            if (!pendingAssistantMediaUrls.contains(url)) {
-              pendingAssistantMediaUrls.add(url);
-            }
-            pendingAssistantVideoUrls.add(url);
-            return;
-          }
+          if (isAssistant) return;
           addVideoUrl(url);
         }
 
@@ -464,7 +475,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
         }
 
         final supplementalRefs = supplementalMediaRefs(
-          internalRaw: m[multimodalInternalMediaPathsKey],
+          internalRaw: isCurrentUser ? m[multimodalInternalMediaPathsKey] : null,
           userPaths: userMediaPaths,
           includeUserPaths: hasAttachedImages,
         );
@@ -539,10 +550,9 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       continue;
     }
 
-    final hasMarkdownImages = shouldParseMarkdownImages(
-      raw,
-      skipImageParsing: skipImageParsing,
-    );
+    final hasMarkdownImages =
+        isCurrentUser &&
+        shouldParseMarkdownImages(raw, skipImageParsing: skipImageParsing);
     // Semantic media detection only - custom attachment markers are not
     // recognized. Attachments arrive via structured media-path keys /
     // userMediaPaths, plus Markdown ![](...).
@@ -649,7 +659,7 @@ Future<List<Map<String, dynamic>>> buildOpenAIChatCompletionMessages(
       stashOrAddImageUrl(url);
     }
     final supplementalRefs = supplementalMediaRefs(
-      internalRaw: m[multimodalInternalMediaPathsKey],
+      internalRaw: isCurrentUser ? m[multimodalInternalMediaPathsKey] : null,
       userPaths: userMediaPaths,
       includeUserPaths: hasAttachedImages,
     );
